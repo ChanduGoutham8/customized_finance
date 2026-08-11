@@ -1,7 +1,7 @@
 // Cache-first app-shell service worker.
 // RELEASE RULE: bump CACHE whenever any app file changes, or installed users
 // keep stale cached files.
-const CACHE = "ledger-shell-v6";
+const CACHE = "ledger-shell-v7";
 
 const SHELL = [
   "./",

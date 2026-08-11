@@ -2294,13 +2294,11 @@ async function restoreBackup(data) {
 // BOOT
 // ============================================================================
 
-// TEMPORARILY DISABLED during active development — service worker caching
-// makes live-testing edits unreliable. RESTORE before final release.
-// if ("serviceWorker" in navigator) {
-//   window.addEventListener("load", () => {
-//     navigator.serviceWorker.register("./sw.js").catch((err) => console.error("sw register failed", err));
-//   });
-// }
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => console.error("sw register failed", err));
+  });
+}
 
 onAuthStateChanged(auth, (user) => {
   S.authReady = true;
