@@ -32,7 +32,7 @@ const CURRENCIES = {
 const CURRENCY_CODES = Object.keys(CURRENCIES);
 
 const PEOPLE_TAGS = ["Family", "Friends", "Work", "Neighbour"];
-const ENTRY_CATEGORIES = ["Groceries", "Rent", "Bills", "Transport", "Eating out", "Shopping", "Salary", "Transfer", "Health", "Other"];
+const ENTRY_CATEGORIES = ["Groceries", "Rent", "Bills", "Transport", "Eating out", "Shopping", "Salary", "Transfer", "Health", "Subscriptions", "Other"];
 const RETENTION_OPTIONS = [7, 14, 30, 60, 90];
 const STALE_DAYS = 30;
 const DUE_SOON_DAYS = 5;
@@ -52,7 +52,6 @@ const S = {
   entries: [],     // flattened account ledger entries, each carries accountId
   investments: [],
   balances: [],    // flattened investment balance snapshots, each carries investmentId
-  notes: [],       // standalone quick-log entries: amount + currency + note + timestamp
   unlockedThisSession: false,
   unsubs: [],
   purgeChecked: false,
@@ -209,7 +208,6 @@ function renderCurrent() {
     case "wallet": html = viewWallet(); break;
     case "account": html = viewAccountDetail(params[0]); break;
     case "investment": html = viewInvestmentDetail(params[0]); break;
-    case "notes": html = viewNotes(); break;
     case "reports": html = viewReports(); break;
     case "trash": html = viewTrash(); break;
     case "settings": html = viewSettings(); break;
@@ -661,16 +659,12 @@ function attachListeners() {
     renderCurrent();
   }, (err) => console.error("balances listener", err)));
 
-  S.unsubs.push(onSnapshot(collection(db, "users", uid, "notes"), (snap) => {
-    S.notes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    renderCurrent();
-  }, (err) => console.error("notes listener", err)));
 }
 
 function detachListeners() {
   S.unsubs.forEach((u) => u());
   S.unsubs = [];
-  S.people = []; S.txns = []; S.accounts = []; S.entries = []; S.investments = []; S.balances = []; S.notes = [];
+  S.people = []; S.txns = []; S.accounts = []; S.entries = []; S.investments = []; S.balances = [];
   S.settings = { theme: "dark", pinHash: null, defaultCurrency: "EUR", purgeDays: 30 };
   S.unlockedThisSession = false;
   S.purgeChecked = false;
@@ -1038,7 +1032,7 @@ actions["quick-add"] = () => {
   const people = activePeople().sort((a, b) => a.name.localeCompare(b.name));
   openSheet(`
     <h2>Add</h2>
-    <button type="button" class="btn primary" style="margin-bottom:0.6rem" data-action="qa-note">+ Quick note</button>
+    <button type="button" class="btn primary" style="margin-bottom:0.6rem" data-action="qa-txn">+ Add transaction</button>
     <button type="button" class="btn ghost" style="margin-bottom:0.6rem" data-action="qa-person">+ New person</button>
     <button type="button" class="btn ghost" style="margin-bottom:0.6rem" data-action="qa-account">+ New account / card</button>
     <button type="button" class="btn ghost" style="margin-bottom:0.6rem" data-action="qa-investment">+ New investment platform</button>
@@ -1051,7 +1045,7 @@ actions["quick-add"] = () => {
       </div>` : ""}
   `);
 };
-actions["qa-note"] = () => { closeSheet(); openNoteForm(); };
+actions["qa-txn"] = () => { closeSheet(); openAddTransactionForm(); };
 actions["qa-person"] = () => { closeSheet(); openPersonForm(); };
 actions["qa-account"] = () => { closeSheet(); openAccountForm(); };
 actions["qa-investment"] = () => { closeSheet(); openInvestmentForm(); };
@@ -1124,18 +1118,7 @@ function viewHome() {
       <p class="muted" style="font-size:0.75rem;margin:0.5rem 0 0">Cash + bank on hand · separate from loans →</p>
     </a>
 
-    <div class="section-title">Notes</div>
-    <div class="card" style="padding:0.3rem 1rem">
-      ${allNotes().slice(0, 5).map((n) => `
-        <div class="row">
-          <div class="main"><div class="title">${escapeHtml(n.note)}</div><div class="sub">${fmtDate(n.at)}</div></div>
-          <div class="amount">${fmtMoney(n.amount, n.currency)}</div>
-        </div>`).join("") || `<p class="muted" style="padding:0.5rem">Nothing noted yet — a quick way to log a transfer or spend without setting up an account or a loan.</p>`}
-    </div>
-    <div class="btn-row" style="margin-bottom:1rem">
-      <button type="button" class="btn ghost" data-action="add-note">+ Quick note</button>
-      ${S.notes.length ? `<button type="button" class="btn ghost" data-action="nav" data-hash="#/notes">View all</button>` : ""}
-    </div>
+    <button type="button" class="btn ghost" style="margin-bottom:1rem" data-action="qa-txn">+ Add transaction</button>
 
     ${activePeople().length === 0 ? `<div class="empty"><div class="icon">👋</div><p>Add your first person to start tracking loans.</p></div>` : ""}
   `;
@@ -1383,11 +1366,9 @@ function openEntryForm(aid, type) {
         category: !isCard ? fd.get("category") : "",
         at: new Date(fd.get("at")).getTime(),
         createdAt: Date.now(),
-        uid: S.user.uid,
       };
-      await addDoc(collection(db, "users", S.user.uid, "accounts", aid, "entries"), data);
       closeSheet();
-      toast("Entry recorded.");
+      saveAccountEntry(aid, data);
     },
   });
 }
@@ -1519,80 +1500,80 @@ actions["delete-balance"] = async (el) => {
 };
 
 // ============================================================================
-// NOTES — a flat quick-log for anything that isn't a loan or a wallet account:
-// "sent ₹30,000 to my father", "spent €40 on groceries". Just amount, currency,
-// a note, and a timestamp. No balance, no direction, no account to set up first.
+// ADD TRANSACTION — the single entry point for logging money moving through
+// a real account. Replaces the old standalone Notes feature entirely: there
+// is no free-floating record anywhere in the app, everything requires an
+// account. Reachable from the FAB (quick-add) from anywhere in the app.
 // ============================================================================
 
-function allNotes() { return S.notes.slice().sort((a, b) => b.at - a.at); }
-function notesTotalsByCurrency() {
-  const totals = {};
-  for (const n of S.notes) totals[n.currency] = (totals[n.currency] || 0) + n.amount;
-  return totals;
-}
+function isCardKind(account) { return account?.kind === "card"; }
 
-function viewNotes() {
-  const notes = allNotes();
-  const totals = notesTotalsByCurrency();
+function openAddTransactionForm(preselectedAccountId) {
+  const accounts = activeAccounts();
+  if (!accounts.length) {
+    toast("Add an account first — then you can record a transaction against it.");
+    return;
+  }
+  const account = accounts.find((a) => a.id === preselectedAccountId) || accounts[0];
+  const isCard = isCardKind(account);
 
-  const rows = notes.map((n) => `
-    <div class="row">
-      <div class="main">
-        <div class="title">${escapeHtml(n.note)}</div>
-        <div class="sub">${fmtDateTime(n.at)}</div>
-      </div>
-      <div class="amount">${fmtMoney(n.amount, n.currency)}</div>
-      <button type="button" class="icon-btn" data-action="edit-note" data-nid="${n.id}" title="Edit">✎</button>
-      <button type="button" class="icon-btn" data-action="delete-note" data-nid="${n.id}" title="Delete">✕</button>
-    </div>
-  `).join("") || `<div class="empty"><div class="icon">📝</div><p>Nothing noted yet.<br>Log anything you just want to remember — a transfer, a cash spend, whatever doesn't need a full loan or account.</p></div>`;
-
-  const content = `
-    ${Object.keys(totals).length ? `
-      <div class="card">
-        <h2>Total noted</h2>
-        <div class="stat-grid">${currencyRows(totals)}</div>
-      </div>` : ""}
-    <div class="card" style="padding:0.3rem 1rem">${rows}</div>
-  `;
-  return renderShell({ title: "Notes", back: "#/", content, fab: "add-note" });
-}
-
-actions["add-note"] = () => openNoteForm();
-actions["edit-note"] = (el) => openNoteForm(S.notes.find((n) => n.id === el.dataset.nid));
-
-function openNoteForm(note) {
   openSheet(`
-    <h2>${note ? "Edit note" : "Quick note"}</h2>
-    <form id="note-form">
-      <div class="field"><label>What was it?</label><input name="note" required placeholder="e.g. Sent to my father" value="${escapeHtml(note?.note || "")}"></div>
-      <div class="field"><label>Amount</label><input type="number" step="0.01" min="0.01" name="amount" required value="${note?.amount ?? ""}"></div>
-      <div class="field"><label>Currency</label><select name="currency">${CURRENCY_CODES.map((c) => `<option value="${c}" ${(note?.currency || S.settings.defaultCurrency) === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
-      <div class="field"><label>Date &amp; time</label><input type="datetime-local" name="at" value="${toDateTimeLocal(note?.at || Date.now())}"></div>
-      <button type="submit" class="btn primary">${note ? "Save" : "Add note"}</button>
+    <h2>Add transaction</h2>
+    <form id="add-txn-form">
+      <div class="field">
+        <label>Account</label>
+        <select name="accountId" id="txn-account-select">
+          ${accounts.map((a) => `<option value="${a.id}" ${a.id === account.id ? "selected" : ""}>${escapeHtml(a.name)} (${a.currency})</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Type</label>
+        <select name="type">
+          ${isCard
+            ? `<option value="charge">Charge</option><option value="payment">Payment</option>`
+            : `<option value="expense">Money out</option><option value="deposit">Money in</option>`}
+        </select>
+      </div>
+      <div class="field"><label>Amount</label><input type="number" step="0.01" min="0.01" name="amount" required></div>
+      <div class="field"><label>Description</label><input name="description" placeholder="e.g. Sent to father, Netflix"></div>
+      ${!isCard ? `<div class="field"><label>Category</label><select name="category">${ENTRY_CATEGORIES.map((c) => `<option>${c}</option>`).join("")}</select></div>` : ""}
+      <div class="field"><label>Date &amp; time</label><input type="datetime-local" name="at" value="${toDateTimeLocal(Date.now())}"></div>
+      <button type="submit" class="btn primary">Save</button>
     </form>
   `, {
+    onMount: (root) => {
+      $("#txn-account-select", root).addEventListener("change", (e) => {
+        openAddTransactionForm(e.target.value);
+      });
+    },
     onSubmit: async (fd) => {
+      const aid = fd.get("accountId");
       const data = {
-        note: fd.get("note").trim(),
+        type: fd.get("type"),
         amount: parseFloat(fd.get("amount")),
-        currency: fd.get("currency"),
+        description: (fd.get("description") || "").trim(),
+        category: !isCard ? fd.get("category") : "",
         at: new Date(fd.get("at")).getTime(),
+        createdAt: Date.now(),
       };
-      if (note) await updateDoc(doc(db, "users", S.user.uid, "notes", note.id), data);
-      else await addDoc(collection(db, "users", S.user.uid, "notes"), { ...data, createdAt: Date.now() });
       closeSheet();
-      toast(note ? "Note updated." : "Noted.");
+      saveAccountEntry(aid, data);
     },
   });
 }
 
-actions["delete-note"] = async (el) => {
-  const nid = el.dataset.nid;
-  if (!confirm("Delete this note? This can't be undone.")) return;
-  await deleteDoc(doc(db, "users", S.user.uid, "notes", nid));
-  toast("Note deleted.");
-};
+// Shared by Add Transaction and the account-detail "Money in/out" flow: asks
+// the Income/Spending question when eligible (§7), then writes the entry.
+function saveAccountEntry(aid, data) {
+  const account = S.accounts.find((a) => a.id === aid);
+  const isIncoming = data.type === "deposit" || data.type === "payment";
+  withIncomeSpendingAnswer(account, data.category, isIncoming, async (answer) => {
+    const finalData = { ...data, uid: S.user.uid };
+    if (answer !== null) finalData.countedInIncomeSpending = answer;
+    await addDoc(collection(db, "users", S.user.uid, "accounts", aid, "entries"), finalData);
+    toast("Transaction recorded.");
+  });
+}
 
 // ============================================================================
 // TRASH & AUTO-PURGE
@@ -2010,8 +1991,7 @@ actions["backup-data"] = async () => {
   const people = S.people.map((p) => ({ ...p, txns: S.txns.filter((t) => t.personId === p.id) }));
   const accounts = S.accounts.map((a) => ({ ...a, entries: S.entries.filter((e) => e.accountId === a.id) }));
   const investments = S.investments.map((i) => ({ ...i, balances: S.balances.filter((b) => b.investmentId === i.id) }));
-  const notes = S.notes;
-  const backup = { version: 3, exportedAt: Date.now(), settings: settingsSnap, people, accounts, investments, notes };
+  const backup = { version: 4, exportedAt: Date.now(), settings: settingsSnap, people, accounts, investments };
   downloadBlob(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }), `ledger-backup-${toISODate(Date.now())}.json`);
   toast("Backup downloaded.");
 };
@@ -2027,8 +2007,7 @@ actions["restore-data"] = () => {
       const peopleCount = (data.people || []).length;
       const accountsCount = (data.accounts || []).length;
       const investmentsCount = (data.investments || []).length;
-      const notesCount = (data.notes || []).length;
-      if (!confirm(`Import ${peopleCount} people, ${accountsCount} accounts, ${investmentsCount} investment platforms, and ${notesCount} notes? This adds to your current data — nothing existing is overwritten.`)) return;
+      if (!confirm(`Import ${peopleCount} people, ${accountsCount} accounts, and ${investmentsCount} investment platforms? This adds to your current data — nothing existing is overwritten.`)) return;
       await restoreBackup(data);
       toast("Backup restored.");
     } catch (e) {
@@ -2064,21 +2043,22 @@ async function restoreBackup(data) {
       await addDoc(collection(db, "users", uid, "investments", ref.id, "balances"), { ...balanceData, uid });
     }
   }
-  for (const n of data.notes || []) {
-    const { id, ...noteData } = n;
-    await addDoc(collection(db, "users", uid, "notes"), noteData);
-  }
+  // Older backup files (version 3 and earlier) may still contain a `notes`
+  // array from the removed Notes feature — deliberately ignored, not
+  // restored. See FINAL_SPEC.md §9.
 }
 
 // ============================================================================
 // BOOT
 // ============================================================================
 
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch((err) => console.error("sw register failed", err));
-  });
-}
+// TEMPORARILY DISABLED during active development — service worker caching
+// makes live-testing edits unreliable. RESTORE before final release.
+// if ("serviceWorker" in navigator) {
+//   window.addEventListener("load", () => {
+//     navigator.serviceWorker.register("./sw.js").catch((err) => console.error("sw register failed", err));
+//   });
+// }
 
 onAuthStateChanged(auth, (user) => {
   S.authReady = true;
