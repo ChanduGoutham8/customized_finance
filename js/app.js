@@ -381,6 +381,62 @@ function walletAvailableCredit() {
   return totals;
 }
 
+// ---- Income / Spending: a per-entry yes/no answer, not a category rule ----
+// Credit cards and Subscription-tagged entries are never eligible — they
+// never show the popup and never count, regardless of any answer.
+const SUBSCRIPTIONS_CATEGORY = "Subscriptions";
+
+function isIncomeSpendingEligible(account, category) {
+  if (!account || account.kind === "card") return false;
+  if (category === SUBSCRIPTIONS_CATEGORY) return false;
+  return true;
+}
+
+// Shows the yes/no popup only when eligible; otherwise calls back immediately
+// with null (meaning "not applicable", no field to set). onFinalize receives
+// true/false/null.
+function withIncomeSpendingAnswer(account, category, isIncoming, onFinalize) {
+  if (!isIncomeSpendingEligible(account, category)) { onFinalize(null); return; }
+  askIncludeInIncomeSpending(isIncoming ? "income" : "spending", (answer) => onFinalize(answer));
+}
+
+function askIncludeInIncomeSpending(direction, onAnswer) {
+  const isIncome = direction === "income";
+  openSheet(`
+    <h2>${isIncome ? "Include this in Income?" : "Include this in Spending?"}</h2>
+    <p class="muted" style="font-size:0.85rem">This only affects your Net ${isIncome ? "Income" : "Spending"} total — the account balance updates either way.</p>
+    <div class="btn-row">
+      <button type="button" class="btn ghost" data-yesno="no">No</button>
+      <button type="button" class="btn primary" data-yesno="yes">Yes</button>
+    </div>
+  `, {
+    onMount: (root) => {
+      $$("[data-yesno]", root).forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const answer = btn.dataset.yesno === "yes";
+          closeSheet();
+          onAnswer(answer);
+        });
+      });
+    },
+  });
+}
+
+// Net Income/Spending are always calculated live from current entries —
+// never a stored running total — so edits/deletes never need separate sync.
+function netIncomeSpendingTotals() {
+  const income = {}, spending = {};
+  for (const e of S.entries) {
+    if (e.countedInIncomeSpending !== true) continue;
+    const account = S.accounts.find((a) => a.id === e.accountId);
+    if (!isIncomeSpendingEligible(account, e.category)) continue;
+    const ccy = account.currency;
+    if (e.type === "deposit") income[ccy] = (income[ccy] || 0) + e.amount;
+    else if (e.type === "expense") spending[ccy] = (spending[ccy] || 0) + e.amount;
+  }
+  return { income, spending };
+}
+
 // ---- Investments (Groww / Upstox style daily balances) ----
 function investmentBalances(iid) {
   return S.balances.filter((b) => b.investmentId === iid).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
