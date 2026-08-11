@@ -9,6 +9,11 @@ No build step. No shared backend — everything lives in **your own** Firebase p
 
 ## Setup
 
+> **Want this automated?** [CHROME_SETUP.md](CHROME_SETUP.md) has a ready-to-paste
+> prompt for the Claude in Chrome browser extension that walks through steps 1–3
+> below using your logged-in Google session, and shows you the config to paste into
+> step 2.
+
 ### 1. Create a Firebase project
 
 1. Go to the [Firebase console](https://console.firebase.google.com) and create a project.
@@ -82,4 +87,6 @@ movement lands on that next entry.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch/commit conventions and the release
-checklist (bumping the service worker cache version, etc).
+checklist (bumping the service worker cache version, etc). [CLAUDE.md](CLAUDE.md) has
+project-specific instructions if you're using Claude Code (CLI or VS Code extension)
+to work on this repo.
