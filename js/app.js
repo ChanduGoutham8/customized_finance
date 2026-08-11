@@ -52,6 +52,7 @@ const S = {
   entries: [],     // flattened account ledger entries, each carries accountId
   investments: [],
   balances: [],    // flattened investment balance snapshots, each carries investmentId
+  notes: [],       // standalone quick-log entries: amount + currency + note + timestamp
   unlockedThisSession: false,
   unsubs: [],
   purgeChecked: false,
@@ -208,6 +209,7 @@ function renderCurrent() {
     case "wallet": html = viewWallet(); break;
     case "account": html = viewAccountDetail(params[0]); break;
     case "investment": html = viewInvestmentDetail(params[0]); break;
+    case "notes": html = viewNotes(); break;
     case "reports": html = viewReports(); break;
     case "trash": html = viewTrash(); break;
     case "settings": html = viewSettings(); break;
@@ -602,12 +604,17 @@ function attachListeners() {
       .map((d) => ({ id: d.id, investmentId: d.ref.parent.parent.id, ...d.data() }));
     renderCurrent();
   }, (err) => console.error("balances listener", err)));
+
+  S.unsubs.push(onSnapshot(collection(db, "users", uid, "notes"), (snap) => {
+    S.notes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderCurrent();
+  }, (err) => console.error("notes listener", err)));
 }
 
 function detachListeners() {
   S.unsubs.forEach((u) => u());
   S.unsubs = [];
-  S.people = []; S.txns = []; S.accounts = []; S.entries = []; S.investments = []; S.balances = [];
+  S.people = []; S.txns = []; S.accounts = []; S.entries = []; S.investments = []; S.balances = []; S.notes = [];
   S.settings = { theme: "dark", pinHash: null, defaultCurrency: "EUR", purgeDays: 30 };
   S.unlockedThisSession = false;
   S.purgeChecked = false;
@@ -975,6 +982,7 @@ actions["quick-add"] = () => {
   const people = activePeople().sort((a, b) => a.name.localeCompare(b.name));
   openSheet(`
     <h2>Add</h2>
+    <button type="button" class="btn primary" style="margin-bottom:0.6rem" data-action="qa-note">+ Quick note</button>
     <button type="button" class="btn ghost" style="margin-bottom:0.6rem" data-action="qa-person">+ New person</button>
     <button type="button" class="btn ghost" style="margin-bottom:0.6rem" data-action="qa-account">+ New account / card</button>
     <button type="button" class="btn ghost" style="margin-bottom:0.6rem" data-action="qa-investment">+ New investment platform</button>
@@ -987,6 +995,7 @@ actions["quick-add"] = () => {
       </div>` : ""}
   `);
 };
+actions["qa-note"] = () => { closeSheet(); openNoteForm(); };
 actions["qa-person"] = () => { closeSheet(); openPersonForm(); };
 actions["qa-account"] = () => { closeSheet(); openAccountForm(); };
 actions["qa-investment"] = () => { closeSheet(); openInvestmentForm(); };
@@ -1058,6 +1067,19 @@ function viewHome() {
       ${dueSoonCards.length ? `<p class="text-debit" style="font-size:0.8rem;margin:0.75rem 0 0">${dueSoonCards.length} card repayment${dueSoonCards.length > 1 ? "s" : ""} due soon</p>` : ""}
       <p class="muted" style="font-size:0.75rem;margin:0.5rem 0 0">Cash + bank on hand · separate from loans →</p>
     </a>
+
+    <div class="section-title">Notes</div>
+    <div class="card" style="padding:0.3rem 1rem">
+      ${allNotes().slice(0, 5).map((n) => `
+        <div class="row">
+          <div class="main"><div class="title">${escapeHtml(n.note)}</div><div class="sub">${fmtDate(n.at)}</div></div>
+          <div class="amount">${fmtMoney(n.amount, n.currency)}</div>
+        </div>`).join("") || `<p class="muted" style="padding:0.5rem">Nothing noted yet — a quick way to log a transfer or spend without setting up an account or a loan.</p>`}
+    </div>
+    <div class="btn-row" style="margin-bottom:1rem">
+      <button type="button" class="btn ghost" data-action="add-note">+ Quick note</button>
+      ${S.notes.length ? `<button type="button" class="btn ghost" data-action="nav" data-hash="#/notes">View all</button>` : ""}
+    </div>
 
     ${activePeople().length === 0 ? `<div class="empty"><div class="icon">👋</div><p>Add your first person to start tracking loans.</p></div>` : ""}
   `;
@@ -1438,6 +1460,82 @@ actions["delete-balance"] = async (el) => {
   if (!confirm("Delete this balance entry?")) return;
   await deleteDoc(doc(db, "users", S.user.uid, "investments", iid, "balances", bid));
   toast("Balance entry deleted.");
+};
+
+// ============================================================================
+// NOTES — a flat quick-log for anything that isn't a loan or a wallet account:
+// "sent ₹30,000 to my father", "spent €40 on groceries". Just amount, currency,
+// a note, and a timestamp. No balance, no direction, no account to set up first.
+// ============================================================================
+
+function allNotes() { return S.notes.slice().sort((a, b) => b.at - a.at); }
+function notesTotalsByCurrency() {
+  const totals = {};
+  for (const n of S.notes) totals[n.currency] = (totals[n.currency] || 0) + n.amount;
+  return totals;
+}
+
+function viewNotes() {
+  const notes = allNotes();
+  const totals = notesTotalsByCurrency();
+
+  const rows = notes.map((n) => `
+    <div class="row">
+      <div class="main">
+        <div class="title">${escapeHtml(n.note)}</div>
+        <div class="sub">${fmtDateTime(n.at)}</div>
+      </div>
+      <div class="amount">${fmtMoney(n.amount, n.currency)}</div>
+      <button type="button" class="icon-btn" data-action="edit-note" data-nid="${n.id}" title="Edit">✎</button>
+      <button type="button" class="icon-btn" data-action="delete-note" data-nid="${n.id}" title="Delete">✕</button>
+    </div>
+  `).join("") || `<div class="empty"><div class="icon">📝</div><p>Nothing noted yet.<br>Log anything you just want to remember — a transfer, a cash spend, whatever doesn't need a full loan or account.</p></div>`;
+
+  const content = `
+    ${Object.keys(totals).length ? `
+      <div class="card">
+        <h2>Total noted</h2>
+        <div class="stat-grid">${currencyRows(totals)}</div>
+      </div>` : ""}
+    <div class="card" style="padding:0.3rem 1rem">${rows}</div>
+  `;
+  return renderShell({ title: "Notes", back: "#/", content, fab: "add-note" });
+}
+
+actions["add-note"] = () => openNoteForm();
+actions["edit-note"] = (el) => openNoteForm(S.notes.find((n) => n.id === el.dataset.nid));
+
+function openNoteForm(note) {
+  openSheet(`
+    <h2>${note ? "Edit note" : "Quick note"}</h2>
+    <form id="note-form">
+      <div class="field"><label>What was it?</label><input name="note" required placeholder="e.g. Sent to my father" value="${escapeHtml(note?.note || "")}"></div>
+      <div class="field"><label>Amount</label><input type="number" step="0.01" min="0.01" name="amount" required value="${note?.amount ?? ""}"></div>
+      <div class="field"><label>Currency</label><select name="currency">${CURRENCY_CODES.map((c) => `<option value="${c}" ${(note?.currency || S.settings.defaultCurrency) === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
+      <div class="field"><label>Date &amp; time</label><input type="datetime-local" name="at" value="${toDateTimeLocal(note?.at || Date.now())}"></div>
+      <button type="submit" class="btn primary">${note ? "Save" : "Add note"}</button>
+    </form>
+  `, {
+    onSubmit: async (fd) => {
+      const data = {
+        note: fd.get("note").trim(),
+        amount: parseFloat(fd.get("amount")),
+        currency: fd.get("currency"),
+        at: new Date(fd.get("at")).getTime(),
+      };
+      if (note) await updateDoc(doc(db, "users", S.user.uid, "notes", note.id), data);
+      else await addDoc(collection(db, "users", S.user.uid, "notes"), { ...data, createdAt: Date.now() });
+      closeSheet();
+      toast(note ? "Note updated." : "Noted.");
+    },
+  });
+}
+
+actions["delete-note"] = async (el) => {
+  const nid = el.dataset.nid;
+  if (!confirm("Delete this note? This can't be undone.")) return;
+  await deleteDoc(doc(db, "users", S.user.uid, "notes", nid));
+  toast("Note deleted.");
 };
 
 // ============================================================================
@@ -1856,7 +1954,8 @@ actions["backup-data"] = async () => {
   const people = S.people.map((p) => ({ ...p, txns: S.txns.filter((t) => t.personId === p.id) }));
   const accounts = S.accounts.map((a) => ({ ...a, entries: S.entries.filter((e) => e.accountId === a.id) }));
   const investments = S.investments.map((i) => ({ ...i, balances: S.balances.filter((b) => b.investmentId === i.id) }));
-  const backup = { version: 2, exportedAt: Date.now(), settings: settingsSnap, people, accounts, investments };
+  const notes = S.notes;
+  const backup = { version: 3, exportedAt: Date.now(), settings: settingsSnap, people, accounts, investments, notes };
   downloadBlob(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }), `ledger-backup-${toISODate(Date.now())}.json`);
   toast("Backup downloaded.");
 };
@@ -1872,7 +1971,8 @@ actions["restore-data"] = () => {
       const peopleCount = (data.people || []).length;
       const accountsCount = (data.accounts || []).length;
       const investmentsCount = (data.investments || []).length;
-      if (!confirm(`Import ${peopleCount} people, ${accountsCount} accounts, and ${investmentsCount} investment platforms? This adds to your current data — nothing existing is overwritten.`)) return;
+      const notesCount = (data.notes || []).length;
+      if (!confirm(`Import ${peopleCount} people, ${accountsCount} accounts, ${investmentsCount} investment platforms, and ${notesCount} notes? This adds to your current data — nothing existing is overwritten.`)) return;
       await restoreBackup(data);
       toast("Backup restored.");
     } catch (e) {
@@ -1907,6 +2007,10 @@ async function restoreBackup(data) {
       const { id: bid, investmentId, ...balanceData } = b;
       await addDoc(collection(db, "users", uid, "investments", ref.id, "balances"), { ...balanceData, uid });
     }
+  }
+  for (const n of data.notes || []) {
+    const { id, ...noteData } = n;
+    await addDoc(collection(db, "users", uid, "notes"), noteData);
   }
 }
 

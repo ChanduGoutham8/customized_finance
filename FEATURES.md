@@ -12,6 +12,11 @@
 
 The layers are **never merged into a single number**. Each is tracked and totalled on its own.
 
+Alongside the three layers there's also **Notes** — a flat, un-tracked log for anything
+that doesn't fit any of them: a transfer to family, a cash spend while travelling,
+anything you just want to remember happened. No balance, no direction, no account or
+person to set up first. See §29.
+
 ---
 
 ## Table of contents
@@ -44,7 +49,8 @@ The layers are **never merged into a single number**. Each is tracked and totall
 26. [Edge cases & business rules](#26-edge-cases--business-rules)
 27. [Known limitations / non-goals](#27-known-limitations--non-goals)
 28. [Roadmap / open items](#28-roadmap--open-items)
-29. [File map](#29-file-map)
+29. [Notes (quick log)](#29-notes-quick-log)
+30. [File map](#30-file-map)
 
 ---
 
@@ -168,6 +174,15 @@ users/{uid}/
         createdAt: number,
         uid: string                  // == the owning user's uid; see note below
       }
+
+  notes/{noteId}
+    {
+      note: string,                  // required — what this was
+      amount: number,
+      currency: "EUR" | "INR",
+      at: number,                    // editable date-time
+      createdAt: number
+    }
 ```
 
 **Why `txns`/`entries`/`balances` carry a `uid` field:** the app syncs each of these
@@ -209,7 +224,7 @@ service cloud.firestore {
 
 ## 5. Navigation & routes
 
-Hash-based router. Bottom tab bar shows 5 destinations: **Home, People, Wallet, Reports, Settings**. (Trash is reached from Settings, not the tab bar. Investments are reached from Wallet, not the tab bar.)
+Hash-based router. Bottom tab bar shows 5 destinations: **Home, People, Wallet, Reports, Settings**. (Trash is reached from Settings, not the tab bar. Investments are reached from Wallet, not the tab bar. Notes are reached from Home, not the tab bar.)
 
 | Route | View | In tab bar? |
 |-------|------|-------------|
@@ -220,6 +235,7 @@ Hash-based router. Bottom tab bar shows 5 destinations: **Home, People, Wallet, 
 | `#/wallet` | Wallet overview | ✔ |
 | `#/account/{aid}` | Account detail | back button |
 | `#/investment/{iid}` | Investment platform detail | back button |
+| `#/notes` | Notes (quick log) | back button (opened from Home) |
 | `#/reports` | Reports & exports | ✔ |
 | `#/trash` | Trash | back button (opened from Settings) |
 | `#/settings` | Settings | ✔ |
@@ -228,7 +244,7 @@ Hash-based router. Bottom tab bar shows 5 destinations: **Home, People, Wallet, 
 - Home: number of overdue loan entries.
 - Wallet: number of credit cards with a repayment due within 5 days.
 
-**FAB "Add" (on Home)** opens a quick-add chooser: New person · New account/card · New investment platform · Loan entry for {an existing person}.
+**FAB "Add" (on Home)** opens a quick-add chooser: Quick note · New person · New account/card · New investment platform · Loan entry for {an existing person}.
 **FAB "Add" (on Wallet)** opens a chooser scoped to Wallet: cash account · bank account · credit card · investment platform.
 
 ---
@@ -323,6 +339,7 @@ Repayments are recorded against a single loan entry.
 - **Needs attention** (up to 6): overdue entries, then stale ones (open, remaining > 0, no activity for 30+ days). Each row taps through to the loan.
 - **Top balances:** the 5 people with the largest absolute net.
 - **"Your money" strip:** a compact, clearly-separate card showing cash+bank on hand per currency and a "N card repayments due soon" note, linking to Wallet. It **does not** merge wallet and loan figures.
+- **Notes strip:** the 5 most recent quick-log notes, a "+ Quick note" button, and a link to the full list (`#/notes`) once any exist.
 - **FAB** quick-add.
 - Empty state prompts adding the first person.
 
@@ -427,8 +444,8 @@ All reminders are **in-app** (there are no push notifications — that would nee
 
 ## 21. Backup & restore
 
-- **Back up all data:** downloads a JSON file (`version: 2`) containing settings, all people (with their loan entries), all accounts (with their entries), and all investment platforms (with their balance history).
-- **Restore from backup:** imports a JSON file and **adds** its people, accounts, and investment platforms to the current data (existing data is kept, not overwritten). Confirms the counts before importing.
+- **Back up all data:** downloads a JSON file (`version: 3`) containing settings, all people (with their loan entries), all accounts (with their entries), all investment platforms (with their balance history), and all notes.
+- **Restore from backup:** imports a JSON file and **adds** its people, accounts, investment platforms, and notes to the current data (existing data is kept, not overwritten). Confirms the counts before importing.
 - Works fully offline.
 
 ---
@@ -513,7 +530,30 @@ When picking one up: branch `feature/<name>`, implement, update this file if beh
 
 ---
 
-## 29. File map
+## 29. Notes (quick log)
+
+For anything that isn't a loan and isn't tied to a specific wallet account — sending
+money to family, a cash spend while travelling, anything you just want to remember
+happened. No account to set up first, no balance, no lent/borrowed direction.
+
+- **Fields:** a short note/description (required), an amount, a currency (EUR/INR),
+  and a date-time (defaults to now, editable).
+- **Add** via the FAB quick-add ("+ Quick note") from anywhere, or the Notes list's
+  own FAB.
+- **List:** newest first, each row shows the note text, date, and amount. A **Total
+  noted** card at the top sums amounts per currency (informational only — not a
+  balance, nothing to reconcile against).
+- **Edit** any note in place. **Delete** is immediate (hard-delete, with
+  confirmation) — notes are simple log entries, not soft-deleted like people/accounts.
+- Surfaced on the **Home** dashboard as a "Notes" section (last 5 entries + a link to
+  the full list), and reachable at `#/notes` (not in the bottom tab bar — same
+  pattern as Trash).
+- Included in JSON backup/restore (`version: 3`).
+- **Not exported** to CSV/Excel/PDF yet (those cover loans only — see roadmap).
+
+---
+
+## 30. File map
 
 ```
 index.html             app shell + PWA meta
