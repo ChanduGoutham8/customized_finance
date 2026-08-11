@@ -52,9 +52,11 @@ const S = {
   entries: [],     // flattened account ledger entries, each carries accountId
   investments: [],
   balances: [],    // flattened investment balance snapshots, each carries investmentId
+  archive: [],     // deliberately retired records — never auto-purged, unlike Trash
   unlockedThisSession: false,
   unsubs: [],
   purgeChecked: false,
+  archiveMigrationChecked: false,
 };
 
 // ============================================================================
@@ -210,6 +212,7 @@ function renderCurrent() {
     case "investment": html = viewInvestmentDetail(params[0]); break;
     case "reports": html = viewReports(); break;
     case "trash": html = viewTrash(); break;
+    case "archive": html = viewArchive(); break;
     case "settings": html = viewSettings(); break;
     default: html = viewHome();
   }
@@ -659,15 +662,21 @@ function attachListeners() {
     renderCurrent();
   }, (err) => console.error("balances listener", err)));
 
+  S.unsubs.push(onSnapshot(collection(db, "users", uid, "archive"), (snap) => {
+    S.archive = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (!S.archiveMigrationChecked) { S.archiveMigrationChecked = true; migrateOldNotesToArchive(); }
+    renderCurrent();
+  }, (err) => console.error("archive listener", err)));
 }
 
 function detachListeners() {
   S.unsubs.forEach((u) => u());
   S.unsubs = [];
-  S.people = []; S.txns = []; S.accounts = []; S.entries = []; S.investments = []; S.balances = [];
+  S.people = []; S.txns = []; S.accounts = []; S.entries = []; S.investments = []; S.balances = []; S.archive = [];
   S.settings = { theme: "dark", pinHash: null, defaultCurrency: "EUR", purgeDays: 30 };
   S.unlockedThisSession = false;
   S.purgeChecked = false;
+  S.archiveMigrationChecked = false;
 }
 
 function applyTheme(theme) {
@@ -1851,6 +1860,69 @@ async function runAutoPurge() {
 }
 
 // ============================================================================
+// ARCHIVE — deliberately retired records, kept forever unless explicitly
+// deleted from here. Distinct from Trash: no auto-purge, no restore-to-active
+// flow, reached from Settings alongside Trash. General mechanism, not a
+// one-off — anything retired from the app in the future goes here too.
+// ============================================================================
+
+function viewArchive() {
+  const rows = S.archive.slice().sort((a, b) => b.archivedAt - a.archivedAt).map((item) => {
+    const d = item.data || {};
+    const summary = item.kind === "note"
+      ? `${escapeHtml(d.note || "")} — ${fmtMoney(d.amount || 0, d.currency || "EUR")}`
+      : escapeHtml(item.kind);
+    return `
+      <div class="row">
+        <div class="main">
+          <div class="title">${summary}</div>
+          <div class="sub">${escapeHtml(item.reason || "")} · archived ${fmtDate(item.archivedAt)}${d.at ? ` · originally ${fmtDate(d.at)}` : ""}</div>
+        </div>
+        <button type="button" class="icon-btn" data-action="delete-archive-item" data-id="${item.id}" title="Permanently delete">✕</button>
+      </div>`;
+  }).join("") || `<div class="empty"><div class="icon">🗄️</div><p>Nothing archived.<br>Retired records — like data from a removed feature — end up here, kept forever unless you delete them yourself.</p></div>`;
+
+  const content = `
+    <p class="muted" style="font-size:0.85rem">Unlike Trash, nothing here is ever auto-removed. These are kept for reference until you explicitly delete one.</p>
+    <div class="card" style="padding:0.3rem 1rem">${rows}</div>
+  `;
+  return renderShell({ title: "Archive", back: "#/settings", content });
+}
+
+actions["delete-archive-item"] = async (el) => {
+  if (!confirm("Permanently delete this archived record? This can't be undone.")) return;
+  await deleteDoc(doc(db, "users", S.user.uid, "archive", el.dataset.id));
+  toast("Permanently deleted.");
+};
+
+// One-time migration: the old standalone Notes feature (removed) may have
+// left documents in the now-unused `notes` collection. Move each into
+// Archive as a read-only record, then remove the original.
+async function migrateOldNotesToArchive() {
+  const uid = S.user.uid;
+  let snap;
+  try {
+    snap = await getDocs(collection(db, "users", uid, "notes"));
+  } catch (err) {
+    return; // nothing to migrate, or no access — either way, not fatal
+  }
+  for (const d of snap.docs) {
+    const noteData = d.data();
+    try {
+      await addDoc(collection(db, "users", uid, "archive"), {
+        kind: "note",
+        data: noteData,
+        reason: "Notes feature removed",
+        archivedAt: Date.now(),
+      });
+      await deleteDoc(d.ref);
+    } catch (err) {
+      console.error("note migration failed for", d.id, err);
+    }
+  }
+}
+
+// ============================================================================
 // REPORTS & EXPORTS
 // ============================================================================
 
@@ -2078,6 +2150,7 @@ function viewSettings() {
     <div class="section-title">Data</div>
     <div class="card" style="padding:0.3rem 1rem">
       <a class="row" href="#/trash"><div class="main title">Trash</div><div class="amount">${trashCount()}</div></a>
+      <a class="row" href="#/archive"><div class="main title">Archive</div><div class="amount">${S.archive.length}</div></a>
       <button type="button" class="row" style="width:100%;background:none;border:none;text-align:left" data-action="backup-data"><div class="main title">Back up all data</div></button>
       <button type="button" class="row" style="width:100%;background:none;border:none;text-align:left" data-action="restore-data"><div class="main title">Restore from backup</div></button>
     </div>
