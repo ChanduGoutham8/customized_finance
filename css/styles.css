@@ -95,7 +95,7 @@ a { color: inherit; }
 
 main.view {
   flex: 1;
-  padding: 1rem 1rem calc(6.5rem + env(safe-area-inset-bottom));
+  padding: 1rem 1rem calc(9.5rem + env(safe-area-inset-bottom));
 }
 
 /* ============ Bottom tab bar ============ */
