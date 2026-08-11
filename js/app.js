@@ -950,7 +950,16 @@ function viewTxnDetail(pid, tid) {
 
   const timeline = [
     { at: t.createdAt, text: `Started · ${fmtMoney(t.principal, t.currency)}`, note: t.description },
-    ...(t.payments || []).map((pay) => ({ at: pay.at, text: `Payment · ${fmtMoney(pay.amount, t.currency)}`, note: pay.note })),
+    ...(t.payments || []).map((pay) => ({
+      at: pay.at, text: `Payment · ${fmtMoney(pay.amount, t.currency)}`, note: pay.note,
+      isPayment: true, payId: pay.id,
+    })),
+    // "Created" and "Payment recorded" are redundant with the Started/Payment
+    // lines above — everything else (edits, deletes, settle/reopen) is real
+    // audit history and needs to actually be visible, not just written.
+    ...(t.history || [])
+      .filter((h) => !h.text.startsWith("Created") && !h.text.startsWith("Payment recorded"))
+      .map((h) => ({ at: h.at, text: h.text, note: null })),
   ].sort((a, b) => b.at - a.at);
 
   const content = `
@@ -990,6 +999,10 @@ function viewTxnDetail(pid, tid) {
         <div class="timeline-item">
           <div class="when">${fmtDate(item.at)}</div>
           <div class="main"><div>${item.text}</div>${item.note ? `<div class="muted" style="font-size:0.78rem">${escapeHtml(item.note)}</div>` : ""}</div>
+          ${item.isPayment ? `
+            <button type="button" class="icon-btn" data-action="edit-payment" data-pid="${pid}" data-tid="${tid}" data-payid="${item.payId}" title="Edit">✎</button>
+            <button type="button" class="icon-btn" data-action="delete-payment" data-pid="${pid}" data-tid="${tid}" data-payid="${item.payId}" title="Delete">✕</button>
+          ` : ""}
         </div>
       `).join("")}
     </div>
@@ -1072,6 +1085,102 @@ async function recordPayment(pid, tid, amount, note, accountId) {
     at: Date.now(),
     createdAt: Date.now(),
   });
+}
+
+// ---- Editing/deleting an individual payment (§1) ----
+// The edit/delete itself always applies; the note prompt only controls
+// whether a line gets written to History explaining why.
+function askOptionalNote(promptText, onResult) {
+  openSheet(`
+    <h2>Save a note about this change?</h2>
+    <p class="muted" style="font-size:0.85rem">${escapeHtml(promptText)}</p>
+    <form id="note-prompt-form">
+      <div class="field"><textarea name="note" placeholder="Optional — e.g. Typo, corrected from 50"></textarea></div>
+      <div class="btn-row">
+        <button type="button" class="btn ghost" data-action="skip-note">Skip</button>
+        <button type="submit" class="btn primary">Save note</button>
+      </div>
+    </form>
+  `, {
+    onMount: (root) => {
+      $("[data-action=skip-note]", root).addEventListener("click", () => { closeSheet(); onResult(null); });
+    },
+    onSubmit: (fd) => {
+      const note = (fd.get("note") || "").trim();
+      closeSheet();
+      onResult(note || null);
+    },
+  });
+}
+
+actions["edit-payment"] = (el) => {
+  const { pid, tid, payid } = el.dataset;
+  const t = S.txns.find((x) => x.id === tid);
+  const payment = (t.payments || []).find((p) => p.id === payid);
+  if (!payment) return;
+  openSheet(`
+    <h2>Edit payment</h2>
+    <form id="edit-payment-form">
+      <div class="field"><label>Amount</label><input type="number" step="0.01" min="0.01" name="amount" required value="${payment.amount}"></div>
+      <button type="submit" class="btn primary">Save</button>
+    </form>
+  `, {
+    onSubmit: (fd) => {
+      const newAmount = parseFloat(fd.get("amount"));
+      closeSheet();
+      askOptionalNote(`Corrected payment ${fmtMoney(payment.amount, t.currency)} → ${fmtMoney(newAmount, t.currency)}`, (note) => {
+        applyPaymentEdit(pid, tid, payid, newAmount, note);
+      });
+    },
+  });
+};
+
+async function applyPaymentEdit(pid, tid, payid, newAmount, userNote) {
+  const t = S.txns.find((x) => x.id === tid);
+  const oldAmount = t.payments.find((p) => p.id === payid)?.amount;
+  const payments = t.payments.map((p) => (p.id === payid ? { ...p, amount: newAmount } : p));
+  const remaining = t.principal - payments.reduce((s, p) => s + p.amount, 0);
+  const history = [...(t.history || [])];
+  if (userNote) history.push({ at: Date.now(), text: `Payment edited: ${fmtMoney(oldAmount, t.currency)} → ${fmtMoney(newAmount, t.currency)} — ${userNote}` });
+  const patch = { payments, history };
+  if (remaining <= 0 && t.status === "open") {
+    patch.status = "settled";
+    history.push({ at: Date.now(), text: "Auto-settled (fully paid)" });
+  } else if (remaining > 0 && t.status === "settled") {
+    patch.status = "open";
+    history.push({ at: Date.now(), text: "Reopened (remaining > 0 after payment edit)" });
+  }
+  patch.history = history;
+  await updateDoc(doc(db, "users", S.user.uid, "people", pid, "txns", tid), patch);
+  toast("Payment updated.");
+}
+
+actions["delete-payment"] = (el) => {
+  const { pid, tid, payid } = el.dataset;
+  if (!confirm("Delete this payment? This can't be undone.")) return;
+  const t = S.txns.find((x) => x.id === tid);
+  const payment = t.payments.find((p) => p.id === payid);
+  if (!payment) return;
+  askOptionalNote(`Deleted payment of ${fmtMoney(payment.amount, t.currency)} recorded ${fmtDate(payment.at)}`, (note) => {
+    applyPaymentDelete(pid, tid, payid, note);
+  });
+};
+
+async function applyPaymentDelete(pid, tid, payid, userNote) {
+  const t = S.txns.find((x) => x.id === tid);
+  const deleted = t.payments.find((p) => p.id === payid);
+  const payments = t.payments.filter((p) => p.id !== payid);
+  const remaining = t.principal - payments.reduce((s, p) => s + p.amount, 0);
+  const history = [...(t.history || [])];
+  if (userNote) history.push({ at: Date.now(), text: `Payment deleted: ${fmtMoney(deleted.amount, t.currency)} (recorded ${fmtDate(deleted.at)}) — ${userNote}` });
+  const patch = { payments, history };
+  if (remaining > 0 && t.status === "settled") {
+    patch.status = "open";
+    history.push({ at: Date.now(), text: "Reopened (remaining > 0 after payment deleted)" });
+  }
+  patch.history = history;
+  await updateDoc(doc(db, "users", S.user.uid, "people", pid, "txns", tid), patch);
+  toast("Payment deleted.");
 }
 
 // ============================================================================
