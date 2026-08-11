@@ -71,7 +71,7 @@ PWA — standalone window, offline app shell, home-screen icon.
 
 ## Project structure
 
-See the [File map](FEATURES.md#30-file-map) in FEATURES.md.
+See the [File map](FEATURES.md#32-file-map) in FEATURES.md.
 
 ## Investments (Groww / Upstox) — how profit/loss works
 

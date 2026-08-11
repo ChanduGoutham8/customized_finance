@@ -39,5 +39,5 @@ Whenever any app file changes (`index.html`, `css/`, `js/`, `manifest.webmanifes
 
 ## Picking up a roadmap item
 
-See [FEATURES.md § Roadmap](FEATURES.md#28-roadmap--open-items). Branch, implement,
+See [FEATURES.md § Roadmap](FEATURES.md#31-roadmap--open-items). Branch, implement,
 update the spec doc if behaviour changes, commit, bump the service worker cache.
