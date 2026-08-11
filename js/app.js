@@ -1235,6 +1235,7 @@ function viewHome() {
 
   const onHand = walletOnHand();
   const dueSoonCards = activeAccounts().filter((a) => a.kind === "card" && isCardDueSoon(a));
+  const { income: netIncome, spending: netSpending } = netIncomeSpendingTotals();
 
   const content = `
     <div class="card">
@@ -1276,6 +1277,15 @@ function viewHome() {
       ${dueSoonCards.length ? `<p class="text-debit" style="font-size:0.8rem;margin:0.75rem 0 0">${dueSoonCards.length} card repayment${dueSoonCards.length > 1 ? "s" : ""} due soon</p>` : ""}
       <p class="muted" style="font-size:0.75rem;margin:0.5rem 0 0">Cash + bank on hand · separate from loans →</p>
     </a>
+
+    <div class="card">
+      <h2>Income &amp; spending</h2>
+      <div class="stat-grid">
+        <div class="stat"><div class="label">Net income</div><div class="value text-credit">${currencyRows(netIncome, { emptyLabel: "—" })}</div></div>
+        <div class="stat"><div class="label">Net spending</div><div class="value text-debit">${currencyRows(netSpending, { emptyLabel: "—" })}</div></div>
+      </div>
+      <p class="muted" style="font-size:0.7rem;margin:0.75rem 0 0">All-time. Only counts entries you answered "yes" to — credit cards, investments, and subscriptions are never included.</p>
+    </div>
 
     <button type="button" class="btn ghost" style="margin-bottom:1rem" data-action="qa-txn">+ Add transaction</button>
 
