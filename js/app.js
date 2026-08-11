@@ -845,8 +845,12 @@ actions["trash-person"] = async (el) => {
 };
 actions["add-loan"] = (el) => openLoanForm(el.dataset.pid, null, el.dataset.type);
 
-function openLoanForm(pid, txn, initialType) {
+function openLoanForm(pid, txn, initialType, initialCurrency) {
   const type = txn?.type || initialType || "lent";
+  const currency = initialCurrency || txn?.currency || S.settings.defaultCurrency;
+  // Creating a loan requires an account (§6) — the money really moves. Editing
+  // an existing loan doesn't re-ask; only the original creation is tied to one.
+  const matchingAccounts = activeAccounts().filter((a) => a.currency === currency);
   openSheet(`
     <h2>${txn ? "Edit loan entry" : "New loan entry"}</h2>
     <form id="loan-form">
@@ -859,13 +863,20 @@ function openLoanForm(pid, txn, initialType) {
       </div>
       <div class="field">
         <label>Currency</label>
-        <select name="currency">${CURRENCY_CODES.map((c) => `<option value="${c}" ${((txn?.currency) || S.settings.defaultCurrency) === c ? "selected" : ""}>${c}</option>`).join("")}</select>
+        <select name="currency" id="loan-currency-select">${CURRENCY_CODES.map((c) => `<option value="${c}" ${currency === c ? "selected" : ""}>${c}</option>`).join("")}</select>
       </div>
       <div class="field"><label>Amount</label><input type="number" step="0.01" min="0.01" name="principal" required value="${txn?.principal ?? ""}"></div>
       <div class="field"><label>Description (optional)</label><input name="description" value="${escapeHtml(txn?.description || "")}"></div>
+      ${!txn ? `
+        <div class="field">
+          <label>Which account?</label>
+          ${matchingAccounts.length
+            ? `<select name="accountId">${matchingAccounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("")}</select>`
+            : `<p class="text-debit" style="font-size:0.85rem">No ${currency} accounts yet — add one in Wallet first, then come back.</p>`}
+        </div>` : ""}
       <div class="field"><label>Date &amp; time</label><input type="datetime-local" name="createdAt" value="${toDateTimeLocal(txn?.createdAt || Date.now())}"></div>
       <div class="field"><label>Due date (optional)</label><input type="date" name="dueDate" value="${txn?.dueDate || ""}"></div>
-      <button type="submit" class="btn primary">${txn ? "Save" : "Add entry"}</button>
+      <button type="submit" class="btn primary" ${!txn && !matchingAccounts.length ? "disabled" : ""}>${txn ? "Save" : "Add entry"}</button>
     </form>
   `, {
     onMount: (root) => {
@@ -875,6 +886,9 @@ function openLoanForm(pid, txn, initialType) {
           btn.classList.add("active", btn.dataset.typeToggle);
           $("input[name=type]", root).value = btn.dataset.typeToggle;
         });
+      });
+      $("#loan-currency-select", root)?.addEventListener("change", (e) => {
+        openLoanForm(pid, txn, $("input[name=type]", root).value, e.target.value);
       });
     },
     onSubmit: async (fd) => {
@@ -895,16 +909,30 @@ function openLoanForm(pid, txn, initialType) {
         if ((txn.dueDate || null) !== data.dueDate) changes.push(`due date ${txn.dueDate || "none"} → ${data.dueDate || "none"}`);
         const history = [...(txn.history || []), { at: Date.now(), text: changes.length ? `Edited: ${changes.join(", ")}` : "Edited" }];
         await updateDoc(doc(db, "users", S.user.uid, "people", pid, "txns", txn.id), { ...data, history });
-      } else {
-        await addDoc(collection(db, "users", S.user.uid, "people", pid, "txns"), {
-          ...data, status: "open", payments: [],
-          history: [{ at: Date.now(), text: `Created (${data.type === "lent" ? "lent" : "borrowed"} ${fmtMoney(data.principal, data.currency)})` }],
-          deletedAt: null,
-          uid: S.user.uid,
-        });
+        closeSheet();
+        toast("Loan entry updated.");
+        return;
       }
+      const accountId = fd.get("accountId");
+      if (!accountId) { toast(`Add a ${data.currency} account first, then try again.`); return; }
+      const person = S.people.find((p) => p.id === pid);
+      await addDoc(collection(db, "users", S.user.uid, "people", pid, "txns"), {
+        ...data, status: "open", payments: [], accountId,
+        history: [{ at: Date.now(), text: `Created (${data.type === "lent" ? "lent" : "borrowed"} ${fmtMoney(data.principal, data.currency)})` }],
+        deletedAt: null,
+        uid: S.user.uid,
+      });
       closeSheet();
-      toast(txn ? "Loan entry updated." : "Loan entry added.");
+      // Borrowing brings money to you (deposit); lending sends it out (expense).
+      const isIncoming = data.type === "borrowed";
+      saveAccountEntry(accountId, {
+        type: isIncoming ? "deposit" : "expense",
+        amount: data.principal,
+        description: `${data.type === "lent" ? "Lent to" : "Borrowed from"} ${person?.name || ""}`,
+        category: "Other",
+        at: data.createdAt,
+        createdAt: Date.now(),
+      });
     },
   });
 }
@@ -992,27 +1020,38 @@ actions["toggle-settle"] = async (el) => {
   const history = [...(t.history || []), { at: Date.now(), text: newStatus === "settled" ? "Marked settled" : "Reopened" }];
   await updateDoc(doc(db, "users", S.user.uid, "people", pid, "txns", tid), { status: newStatus, history });
 };
-actions["pay-full"] = (el) => recordPayment(el.dataset.pid, el.dataset.tid, parseFloat(el.dataset.remaining), "");
+actions["pay-full"] = (el) => actions["open-pay-sheet"](el);
 actions["open-pay-sheet"] = (el) => {
   const { pid, tid, remaining } = el.dataset;
+  const t = S.txns.find((x) => x.id === tid);
   const slider = $("#pay-slider");
   const amount = slider ? parseFloat(slider.value) || 0 : 0;
+  // Repayment requires an account too (§6) — real cash moves either way.
+  const matchingAccounts = activeAccounts().filter((a) => a.currency === t.currency);
   openSheet(`
     <h2>Record payment</h2>
     <form id="pay-form">
-      <div class="field"><label>Amount (remaining ${fmtMoney(parseFloat(remaining), S.txns.find((t) => t.id === tid)?.currency || "EUR")})</label>
+      <div class="field"><label>Amount (remaining ${fmtMoney(parseFloat(remaining), t.currency)})</label>
         <input type="number" step="0.01" min="0.01" name="amount" required value="${amount || parseFloat(remaining)}"></div>
+      <div class="field">
+        <label>Which account?</label>
+        ${matchingAccounts.length
+          ? `<select name="accountId">${matchingAccounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("")}</select>`
+          : `<p class="text-debit" style="font-size:0.85rem">No ${t.currency} accounts yet — add one in Wallet first, then come back.</p>`}
+      </div>
       <div class="field"><label>Note (optional)</label><input name="note"></div>
-      <button type="submit" class="btn primary">Record payment</button>
+      <button type="submit" class="btn primary" ${!matchingAccounts.length ? "disabled" : ""}>Record payment</button>
     </form>
   `, {
     onSubmit: async (fd) => {
-      await recordPayment(pid, tid, parseFloat(fd.get("amount")), fd.get("note").trim());
+      const accountId = fd.get("accountId");
+      if (!accountId) { toast(`Add a ${t.currency} account first, then try again.`); return; }
       closeSheet();
+      await recordPayment(pid, tid, parseFloat(fd.get("amount")), fd.get("note").trim(), accountId);
     },
   });
 };
-async function recordPayment(pid, tid, amount, note) {
+async function recordPayment(pid, tid, amount, note, accountId) {
   const t = S.txns.find((x) => x.id === tid);
   const payment = { id: crypto.randomUUID(), amount, at: Date.now(), note };
   const payments = [...(t.payments || []), payment];
@@ -1021,7 +1060,18 @@ async function recordPayment(pid, tid, amount, note) {
   const patch = { payments, history };
   if (remaining <= 0 && t.status === "open") { patch.status = "settled"; history.push({ at: Date.now(), text: "Auto-settled (fully paid)" }); }
   await updateDoc(doc(db, "users", S.user.uid, "people", pid, "txns", tid), patch);
-  toast("Payment recorded.");
+  // Being repaid on a loan you gave brings money to you (deposit); paying
+  // someone back on a loan you took sends it out (expense).
+  const person = S.people.find((p) => p.id === pid);
+  const isIncoming = t.type === "lent";
+  saveAccountEntry(accountId, {
+    type: isIncoming ? "deposit" : "expense",
+    amount,
+    description: `${t.type === "lent" ? "Repaid by" : "Repaid to"} ${person?.name || ""}`,
+    category: "Other",
+    at: Date.now(),
+    createdAt: Date.now(),
+  });
 }
 
 // ============================================================================
