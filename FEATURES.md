@@ -121,7 +121,8 @@ users/{uid}/
         status: "open" | "settled",
         payments: [ { id, amount, at, note } ],
         history:  [ { at, text } ],  // audit log
-        deletedAt: number | null
+        deletedAt: number | null,
+        uid: string                 // == the owning user's uid; see note below
       }
 
   accounts/{accountId}
@@ -147,7 +148,8 @@ users/{uid}/
         description: string,
         category: string,             // cash/bank only; from a preset list
         at: number,                   // editable date-time
-        createdAt: number
+        createdAt: number,
+        uid: string                   // == the owning user's uid; see note below
       }
 
   investments/{investmentId}
@@ -163,9 +165,23 @@ users/{uid}/
       {
         date: "YYYY-MM-DD",          // one snapshot per day (re-saving the same date updates it)
         amount: number,              // account value as of that date
-        createdAt: number
+        createdAt: number,
+        uid: string                  // == the owning user's uid; see note below
       }
 ```
+
+**Why `txns`/`entries`/`balances` carry a `uid` field:** the app syncs each of these
+three subcollection types with a single `collectionGroup` listener (all loan entries
+across every person, in one query) rather than one listener per parent. Firestore
+can't authorize a collection-group *query* using a path-based rule — the query isn't
+scoped by parent path, so the rule can't prove every possible match belongs to the
+requesting user. Storing the owner's uid directly on the document, writing a rule
+that checks `resource.data.uid`, **and** adding a matching `where("uid", "==", uid)`
+clause to the client query itself is the standard way around that (see the two-rule
+setup below) — Firestore rejects a collection-group query outright, even with a
+correct `resource.data` rule, unless the query's own filters let it statically prove
+every possible match satisfies the rule. Writes still go through the normal
+per-parent path and are authorized by the path-based rule regardless.
 
 **Firestore security rules** (locks every user to their own tree — covers all of the above via the wildcard; see `firestore.rules`):
 
@@ -175,6 +191,15 @@ service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{uid}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    match /{path=**}/txns/{txnId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+    match /{path=**}/entries/{entryId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+    match /{path=**}/balances/{balanceId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
     }
   }
 }

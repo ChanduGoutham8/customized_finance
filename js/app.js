@@ -10,8 +10,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
-  collection, collectionGroup, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot,
-  getDocs, writeBatch,
+  collection, collectionGroup, query, where, doc, addDoc, setDoc, updateDoc, deleteDoc,
+  onSnapshot, getDocs, writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
@@ -572,7 +572,7 @@ function attachListeners() {
     renderCurrent();
   }, (err) => console.error("people listener", err)));
 
-  S.unsubs.push(onSnapshot(collectionGroup(db, "txns"), (snap) => {
+  S.unsubs.push(onSnapshot(query(collectionGroup(db, "txns"), where("uid", "==", uid)), (snap) => {
     S.txns = snap.docs
       .filter((d) => d.ref.path.startsWith(uidPrefix()))
       .map((d) => ({ id: d.id, personId: d.ref.parent.parent.id, ...d.data() }));
@@ -584,7 +584,7 @@ function attachListeners() {
     renderCurrent();
   }, (err) => console.error("accounts listener", err)));
 
-  S.unsubs.push(onSnapshot(collectionGroup(db, "entries"), (snap) => {
+  S.unsubs.push(onSnapshot(query(collectionGroup(db, "entries"), where("uid", "==", uid)), (snap) => {
     S.entries = snap.docs
       .filter((d) => d.ref.path.startsWith(uidPrefix()))
       .map((d) => ({ id: d.id, accountId: d.ref.parent.parent.id, ...d.data() }));
@@ -596,7 +596,7 @@ function attachListeners() {
     renderCurrent();
   }, (err) => console.error("investments listener", err)));
 
-  S.unsubs.push(onSnapshot(collectionGroup(db, "balances"), (snap) => {
+  S.unsubs.push(onSnapshot(query(collectionGroup(db, "balances"), where("uid", "==", uid)), (snap) => {
     S.balances = snap.docs
       .filter((d) => d.ref.path.startsWith(uidPrefix()))
       .map((d) => ({ id: d.id, investmentId: d.ref.parent.parent.id, ...d.data() }));
@@ -843,6 +843,7 @@ function openLoanForm(pid, txn, initialType) {
           ...data, status: "open", payments: [],
           history: [{ at: Date.now(), text: `Created (${data.type === "lent" ? "lent" : "borrowed"} ${fmtMoney(data.principal, data.currency)})` }],
           deletedAt: null,
+          uid: S.user.uid,
         });
       }
       closeSheet();
@@ -1304,6 +1305,7 @@ function openEntryForm(aid, type) {
         category: !isCard ? fd.get("category") : "",
         at: new Date(fd.get("at")).getTime(),
         createdAt: Date.now(),
+        uid: S.user.uid,
       };
       await addDoc(collection(db, "users", S.user.uid, "accounts", aid, "entries"), data);
       closeSheet();
@@ -1424,7 +1426,7 @@ function openBalanceForm(iid) {
       if (existing) {
         await updateDoc(doc(db, "users", S.user.uid, "investments", iid, "balances", existing.id), { amount });
       } else {
-        await addDoc(collection(db, "users", S.user.uid, "investments", iid, "balances"), { date, amount, createdAt: Date.now() });
+        await addDoc(collection(db, "users", S.user.uid, "investments", iid, "balances"), { date, amount, createdAt: Date.now(), uid: S.user.uid });
       }
       closeSheet();
       toast("Balance saved.");
@@ -1886,24 +1888,24 @@ async function restoreBackup(data) {
     const { txns, id, ...personData } = p;
     const ref = await addDoc(collection(db, "users", uid, "people"), personData);
     for (const t of txns || []) {
-      const { id: tid, ...txnData } = t;
-      await addDoc(collection(db, "users", uid, "people", ref.id, "txns"), txnData);
+      const { id: tid, personId, ...txnData } = t;
+      await addDoc(collection(db, "users", uid, "people", ref.id, "txns"), { ...txnData, uid });
     }
   }
   for (const a of data.accounts || []) {
     const { entries, id, ...accountData } = a;
     const ref = await addDoc(collection(db, "users", uid, "accounts"), accountData);
     for (const e of entries || []) {
-      const { id: eid, ...entryData } = e;
-      await addDoc(collection(db, "users", uid, "accounts", ref.id, "entries"), entryData);
+      const { id: eid, accountId, ...entryData } = e;
+      await addDoc(collection(db, "users", uid, "accounts", ref.id, "entries"), { ...entryData, uid });
     }
   }
   for (const inv of data.investments || []) {
     const { balances, id, ...invData } = inv;
     const ref = await addDoc(collection(db, "users", uid, "investments"), invData);
     for (const b of balances || []) {
-      const { id: bid, ...balanceData } = b;
-      await addDoc(collection(db, "users", uid, "investments", ref.id, "balances"), balanceData);
+      const { id: bid, investmentId, ...balanceData } = b;
+      await addDoc(collection(db, "users", uid, "investments", ref.id, "balances"), { ...balanceData, uid });
     }
   }
 }

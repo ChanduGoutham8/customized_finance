@@ -4,5 +4,20 @@ service cloud.firestore {
     match /users/{uid}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
+
+    // The app also reads txns/entries/balances via collectionGroup queries (one
+    // listener each, instead of one per person/account/investment). Firestore
+    // can't verify a path-based rule for those since collectionGroup queries
+    // aren't scoped by parent path, so these documents also carry a `uid` field
+    // and get a second rule that checks it directly.
+    match /{path=**}/txns/{txnId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+    match /{path=**}/entries/{entryId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+    match /{path=**}/balances/{balanceId} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
   }
 }

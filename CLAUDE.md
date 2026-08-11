@@ -37,9 +37,14 @@ drift from reality.
   so every click fires N times after N re-renders. If you add a new kind of event
   delegation, attach it once at module load, not inside `renderCurrent()` or any view
   function.
-- Firestore sync uses `collectionGroup` queries (`txns`, `entries`, `balances`) filtered
-  in JS by path prefix, rather than per-parent listeners — simpler fan-out for a
-  single-user app. Don't switch this to per-document listeners without a reason.
+- Firestore sync uses `collectionGroup` queries (`txns`, `entries`, `balances`) rather
+  than per-parent listeners — simpler fan-out for a single-user app. Each of those
+  three document types carries a `uid` field, and each query has a matching
+  `where("uid", "==", uid)` clause — both are required together for Firestore to
+  authorize the query at all (a path-based `/users/{uid}/**` rule alone can't cover a
+  collection-group query, since it isn't scoped by parent path; see FEATURES.md §4 for
+  the full explanation). Don't remove the `where` clause or the `uid` field without
+  replacing this mechanism entirely.
 - State lives in the single `S` object. Any `onSnapshot` callback updates `S` and calls
   `renderCurrent()` — there's no separate "dirty" tracking.
 
